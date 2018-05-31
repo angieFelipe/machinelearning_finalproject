@@ -1,0 +1,175 @@
+---
+title: "Machine Learning on Barbell lifts"
+author: "Angie Felipe"
+date: "29/5/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE
+)
+```
+## Executive Summary
+
+The goal of this excercise is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants and be able to predict if they perform barbell lifts correctly (class A) and incorrectly (class B,C,D,E). 
+A selection on relevant variables have been performed, then principal components for each device have been applied and a random forest on the pre-processed dataset. An accuracy of 1 has been obtained for the test set and also for the validation set.
+
+## Dataset
+
+The data for this project come from <http://groupware.les.inf.puc-rio.br/har>, section on the Weight Lifting Exercise Dataset. The paper of reference is:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: <http://groupware.les.inf.puc-rio.br/har#ixzz5GtgbJYXz>
+
+See the paper or the web for detais of the dataset.
+
+```{r data,  include=FALSE}
+library(readr)
+pml_training <- read_csv("pml-training.csv",
+                         col_types = cols(X1 = col_number(), 
+                                          cvtd_timestamp = col_datetime(format = "%d/%m/%Y %H:%M")),
+                         na = c("", "NA","#DIV/0!"))
+
+validation<-read_csv("pml-testing.csv",
+                     col_types = cols(X1 = col_number(), 
+                                      cvtd_timestamp = col_datetime(format = "%d/%m/%Y %H:%M")),
+                     na = c("", "NA","#DIV/0!"))
+
+library(caret)
+set.seed(45093)
+inTrain = createDataPartition(pml_training$classe, p = 3/4)[[1]]
+training = pml_training[ inTrain,]
+testing = pml_training[-inTrain,]
+
+```
+
+
+## Exploratory Analysis and Pre Processing
+
+There are 38 variables for each device (4), several of them plenty of missing values. The person who does the lifting is identified with the user_name and the variable to predict is classe. The 6 variables left are use to identify the lifting (num_window) and the moment of time.
+
+The validaton data has a unique observation (num_window) per lifting while in the training data set there is an average of 17.19 observations by each lifting. Therefore, an analysis of the problem by the complet exercise of lifting must be discarded.
+
+First I reduced the variables as said previously to those with complete information and not corresponding with the lifting.
+
+```{r clean, include=FALSE}
+library(dplyr)
+to_drop<-nearZeroVar(training, names = TRUE)
+
+pml_train<-select(pml_training, -to_drop, -"X1",
+                  -("raw_timestamp_part_1":"num_window") )
+pml_train$user_name<-as.factor(pml_train$user_name)
+pml_train$classe<-as.factor(pml_train$classe)
+to_drop2<-character()
+i=0
+for (j in 4:length(pml_train)) {
+        
+        if(mean(is.na(pml_train[,j]))>0){
+                i=i+1
+                to_drop2[i]=names(pml_train)[j]}
+        
+}
+pml_train<-select(pml_train, -to_drop2)
+features<-names(pml_train)
+```
+
+Second, for each device I have applied Principal Components to reduce to 2 variables each.
+
+```{r pca, message=FALSE, warning=FALSE, include=FALSE}
+belt<-preProcess(select(pml_train, contains("belt")),
+                 method = "pca", pcaComp = 2)
+arm<-preProcess(select(pml_train, contains("arm")),
+                 method = "pca", pcaComp = 2)
+dumbbell<-preProcess(select(pml_train, contains("dumbbell")),
+                 method = "pca", pcaComp = 2)
+forearm<-preProcess(select(pml_train, contains("forearm")),
+                 method = "pca", pcaComp = 2)
+traindf<-data.frame(user_name=pml_train$user_name,
+               classe=pml_train$classe,
+               belt1=predict(belt,pml_train)$PC1,
+               belt2=predict(belt,pml_train)$PC2,
+               forearm1=predict(forearm,pml_train)$PC1,
+               forearm2=predict(forearm,pml_train)$PC2,
+               arm1=predict(arm,pml_train)$PC1,
+               arm2=predict(arm,pml_train)$PC2,
+               dumbbell1=predict(dumbbell,pml_train)$PC1,
+               dumbbell2=predict(dumbbell,pml_train)$PC2
+               )
+```
+There seems to be a relation between the person and the result
+
+```{r plot1}
+chisq.test(traindf$user_name, traindf$classe)$p.value
+with(traindf, plot(user_name, classe, main= "Classe by user"))
+
+```
+
+PCA1 for each device are plotted against classe.
+
+```{r plot2, fig.cap="PCA1 for each device by classe", fig.align='center'}
+par(mfrow=c(2,2))
+with(traindf,{
+        boxplot( arm1 ~classe, main="ARM1")
+        boxplot( forearm1 ~classe, main= "FOREARM1")
+        boxplot( belt1 ~classe, main= "BELT1")
+        boxplot( dumbbell1 ~classe, main = "DUMBBELL1")
+        })
+```
+
+## MACHINE LEARNING
+
+As the goal is clearly to obtain the most accurate prediction, I have applied random forest algorithm. The results obtained in the corresponding test set are really good.
+```{r model}
+library(randomForest)
+fit<-randomForest(classe~.,data = traindf)
+test<-testing[,colnames(testing) %in% features]
+test$user_name<-as.factor(test$user_name)
+test$classe<-as.factor(test$classe)
+testpreP2<-data.frame(user_name=test$user_name,
+                               classe=test$classe,
+                               belt1=predict(belt,test)$PC1,
+                               belt2=predict(belt,test)$PC2,
+                               forearm1=predict(forearm,test)$PC1,
+                               forearm2=predict(forearm,test)$PC2,
+                               arm1=predict(arm,test)$PC1,
+                               arm2=predict(arm,test)$PC2,
+                               dumbbell1=predict(dumbbell,test)$PC1,
+                               dumbbell2=predict(dumbbell,test)$PC2
+)
+confusionMatrix(predict(fit,newdata = testpreP2),
+                testpreP2$classe)
+```
+
+## PREDICTION
+
+As the results of the model in the testing set show an accuracy of 1, this model has also been applied to the validation data.
+
+```{r val, eval=FALSE}
+val<-validation[,colnames(validation) %in% features]
+val$user_name<-as.factor(val$user_name)
+val$classe<-as.factor(rep("A",nrow(val)))
+valpreP2<-data.frame(user_name=val$user_name,
+                             classe=val$classe,
+                             belt1=predict(belt,val)$PC1,
+                             belt2=predict(belt,val)$PC2,
+                             forearm1=predict(forearm,val)$PC1,
+                             forearm2=predict(forearm,val)$PC2,
+                             arm1=predict(arm,val)$PC1,
+                             arm2=predict(arm,val)$PC2,
+                             dumbbell1=predict(dumbbell,val)$PC1,
+                             dumbbell2=predict(dumbbell,val)$PC2
+)
+predict(fit,newdata = valpreP2)
+```
+
+The results obtained once contrasted with the Course Project Prediction Quiz are 20 of 20
+
+## CONCLUSION AND FURTHER WORK
+
+The goal of the excercise has been reached with an accuracy of 1 in the validation dataset.
+Further research must be done if there is a possibility to reduce devices or if with first PCA of each device will be enough
